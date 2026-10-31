@@ -40,6 +40,7 @@ ALIASES = {"strikered": "Strike_R", "defendred": "Defend_R", "strikegreen": "Str
            "overclock": "Steam Power"}
 RELIC_ALIASES = {"theboot": "Boot", "paperphrog": "Paper Frog", "wingboots": "WingedGreaves"}
 ALL_POLICIES = ["built-in", "always skip", "random", "popularity", "value model"]
+EXTRA_POLICIES = ["random no skip"]  # only runs when named in --policies
 
 
 def norm(name):
@@ -166,6 +167,8 @@ def make_picker(policy, rng):
         return lambda gc, cards: -1
     if policy == "random":
         return lambda gc, cards: rng.choice([-1] + list(range(len(cards))))
+    if policy == "random no skip":
+        return lambda gc, cards: rng.randrange(len(cards))
     fz, meta = _G["fz"], _G["meta"]
     if policy == "popularity":
         rates, prior = meta["popularity"], meta["prior"]
@@ -240,7 +243,7 @@ def main():
                     help="the bot is weak at A15 and dies in act 1; the models were trained on A15+")
     ap.add_argument("--workers", type=int, default=os.cpu_count() or 1)
     ap.add_argument("--model", default="models/value_model.json")
-    ap.add_argument("--policies", nargs="+", default=ALL_POLICIES, choices=ALL_POLICIES)
+    ap.add_argument("--policies", nargs="+", default=ALL_POLICIES, choices=ALL_POLICIES + EXTRA_POLICIES)
     ap.add_argument("--ref", default="built-in", help="policy the others are compared with")
     ap.add_argument("--out", default="", help="optional CSV with one row per run and policy")
     args = ap.parse_args()
