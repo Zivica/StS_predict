@@ -10,6 +10,9 @@ Training uses the state after the pick that was really made, with the outcome of
 (floors survived after the pick) as the target. Cross-validation is grouped by run.
 Player skill confounds all of this: strong players both pick better and survive longer,
 so the player_experience column is a feature to soak up part of that.
+
+--save writes two files: the model (<name>.json) and its feature layout and lookup tables
+(<name>.meta.json). src/sim_eval.py needs both.
 """
 import argparse
 import json
@@ -29,17 +32,27 @@ NEEDED = {"relics", "upgrades", "player_experience"}
 PARAMS = dict(n_estimators=400, max_depth=5, learning_rate=0.05, subsample=0.8,
               colsample_bytree=0.6, min_child_weight=20, reg_lambda=5,
               tree_method="hist", n_jobs=-1, verbosity=0)
+# Order of the numeric columns at the start of every feature row. sim_eval.py relies on it.
+NUMERIC_COLUMNS = ["hp", "max_hp", "hp_ratio", "floor", "act", "ascension",
+                   "deck_size_after", "n_relics", "n_upgrades", "log_player_experience"]
 
 
 def one_hot(values):
     codes, uniques = pd.factorize(values)
     n = len(codes)
-    return sparse.csr_matrix((np.ones(n, dtype=np.float32), (np.arange(n), codes)),
-                             shape=(n, len(uniques)))
+    m = sparse.csr_matrix((np.ones(n, dtype=np.float32), (np.arange(n), codes)),
+                          shape=(n, len(uniques)))
+    return m, [str(u) for u in uniques]
+
+
+def vocab_list(vocabulary):
+    """DictVectorizer vocabulary (name -> column) as a list of names in column order."""
+    return sorted(vocabulary, key=vocabulary.get)
 
 
 def build_state_features(raw):
-    """One row per (screen, candidate): features of the state AFTER taking that candidate."""
+    """One row per (screen, candidate): features of the state AFTER taking that candidate.
+    Returns (df, X, meta). meta describes the column layout of X."""
     df = raw.reset_index(drop=True).copy()
     codes, _ = pd.factorize(df["screen_id"])  # screens numbered by first appearance
     per_screen = df.loc[~df["screen_id"].duplicated()]
@@ -58,10 +71,13 @@ def build_state_features(raw):
         shape=(len(df), len(dv.vocabulary_)))
     deck_after = dv.transform(decks).tocsr()[codes] + add
 
-    relic_m = DictVectorizer(dtype=np.float32).fit_transform(relics).tocsr()[codes]
-    upgrade_m = DictVectorizer(dtype=np.float32).fit_transform(upgrades).tocsr()[codes]
+    rv = DictVectorizer(dtype=np.float32)
+    relic_m = rv.fit_transform(relics).tocsr()[codes]
+    uv = DictVectorizer(dtype=np.float32)
+    upgrade_m = uv.fit_transform(upgrades).tocsr()[codes]
     n_relics = np.array([len(r) for r in relics])[codes]
     n_upgrades = np.array([sum(u.values()) for u in upgrades])[codes]
+    char_m, chars = one_hot(df["character"])
 
     num = np.column_stack([
         df["hp"].astype(float).fillna(0), df["max_hp"].astype(float).fillna(0),
@@ -70,9 +86,12 @@ def build_state_features(raw):
         df["deck_size"].astype(float) + is_card, n_relics, n_upgrades,
         np.log1p(df["player_experience"].astype(float).fillna(0).clip(lower=0)),
     ]).astype(np.float32)
-    X = sparse.hstack([sparse.csr_matrix(num), deck_after, relic_m, upgrade_m,
-                       one_hot(df["character"])], format="csr")
-    return df, X
+    X = sparse.hstack([sparse.csr_matrix(num), deck_after, relic_m, upgrade_m, char_m],
+                      format="csr")
+    meta = {"numeric": NUMERIC_COLUMNS, "deck_vocab": vocab_list(dv.vocabulary_),
+            "relic_vocab": vocab_list(rv.vocabulary_),
+            "upgrade_vocab": vocab_list(uv.vocabulary_), "chars": chars}
+    return df, X, meta
 
 
 def screen_table(te, score, base, base_all):
@@ -114,6 +133,28 @@ def agree_gap(oof, n_boot=300, seed=0):
     return point, lo, hi
 
 
+def save_final(df, X, meta, path, seed):
+    """Fit on all data and write the model plus its meta file (layout, popularity table,
+    and a high player_experience value to use when the simulator asks for a decision)."""
+    m = df["picked"].to_numpy() == 1
+    final = XGBRegressor(**PARAMS, random_state=seed)
+    final.fit(X[m], df["floors_after"].to_numpy()[m])
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    final.save_model(str(path))
+
+    stats = df.groupby("candidate")["picked"].agg(["sum", "count"])
+    prior = float(df["picked"].mean())
+    meta = dict(meta)
+    meta["prior"] = prior
+    meta["popularity"] = {k: float(v) for k, v in
+                          ((stats["sum"] + 5 * prior) / (stats["count"] + 5)).items()}
+    meta["experience_hi"] = float(df["player_experience"].quantile(0.9))
+    meta_path = path.with_name(path.stem + ".meta.json")
+    meta_path.write_text(json.dumps(meta))
+    print(f"\nsaved final model to {path} and its layout to {meta_path}")
+
+
 def main():
     warnings.filterwarnings("ignore")
     ap = argparse.ArgumentParser()
@@ -123,6 +164,7 @@ def main():
     ap.add_argument("--sample-runs", type=int, default=0,
                     help="use a random subset of this many runs (0 = all)")
     ap.add_argument("--save", default="", help="also fit on all data and save the model here")
+    ap.add_argument("--no-cv", action="store_true", help="skip cross-validation (with --save)")
     args = ap.parse_args()
 
     raw = pd.read_csv(args.csv)
@@ -134,10 +176,16 @@ def main():
         if len(runs) > args.sample_runs:
             keep = np.random.default_rng(args.seed).choice(runs, args.sample_runs, replace=False)
             raw = raw[raw["run_id"].isin(keep)]
-    df, X = build_state_features(raw)
+    df, X, meta = build_state_features(raw)
     counts = df.groupby("screen_id").size()
     print(f"{len(counts)} screens from {df['run_id'].nunique()} runs, {X.shape[1]} features, "
           f"{args.folds}-fold CV grouped by run\n")
+
+    if args.no_cv:
+        if not args.save:
+            raise SystemExit("--no-cv only makes sense together with --save")
+        save_final(df, X, meta, args.save, args.seed)
+        return
 
     tables = []
     for k, (tr_idx, te_idx) in enumerate(
@@ -176,12 +224,7 @@ def main():
           f"{(dis['pred_best'] - dis['pred_picked']).mean():.2f} floors better than the player's pick")
 
     if args.save:
-        m = df["picked"].to_numpy() == 1
-        final = XGBRegressor(**PARAMS, random_state=args.seed)
-        final.fit(X[m], df["floors_after"].to_numpy()[m])
-        Path(args.save).parent.mkdir(parents=True, exist_ok=True)
-        final.save_model(args.save)
-        print(f"\nsaved final model to {args.save}")
+        save_final(df, X, meta, args.save, args.seed)
 
 
 if __name__ == "__main__":
