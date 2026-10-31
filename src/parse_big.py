@@ -56,6 +56,17 @@ def iter_events(path, chunk=32 * 1024 * 1024):
             pos = end
 
 
+def with_ascenders_bane(run):
+    """Ascension 10+ runs start with the curse Ascender's Bane, which the start deck in
+    parse_runs.py does not include. Record it as a card gained at floor 0."""
+    if (run.get("ascension_level") or 0) < 10:
+        return run
+    run = dict(run)
+    run["items_purchased"] = ["AscendersBane"] + list(run.get("items_purchased", []))
+    run["item_purchase_floors"] = [0] + list(run.get("item_purchase_floors", []))
+    return run
+
+
 def wanted(run, args):
     if run.get("is_daily") or run.get("is_endless") or run.get("is_trial"):
         return False
@@ -92,7 +103,7 @@ def main():
             if not wanted(run, args):
                 continue
             try:
-                rows, mm = parse_runs.parse_run(_Record(str(kept), run))
+                rows, mm = parse_runs.parse_run(_Record(str(kept), with_ascenders_bane(run)))
             except (KeyError, TypeError, ValueError):
                 bad += 1
                 continue
