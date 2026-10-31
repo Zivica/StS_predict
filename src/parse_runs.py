@@ -18,12 +18,10 @@ START_DECK = {
     "DEFECT": ["Strike_B"] * 4 + ["Defend_B"] * 4 + ["Zap", "Dualcast"],
     "WATCHER": ["Strike_P"] * 4 + ["Defend_P"] * 4 + ["Eruption", "Vigilance"],
 }
-# Picking these instead of a card counts as a skip.
 SKIP_PICKS = {"SKIP", "Skip", "Singing Bowl"}
 
 
 def base(name):
-    """'Defend_G+1' -> 'Defend_G' (upgrades are ignored)."""
     return re.sub(r"\+\d+$", "", name)
 
 
@@ -47,11 +45,9 @@ def parse_run(path):
         known_cards.add(base(ch["picked"]))
         known_cards.update(base(c) for c in ch["not_picked"])
 
-    # Deck changes that are not card rewards: shop purges and shop card buys.
     other = [(f, "purge", base(n)) for n, f in zip(r["items_purged"], r["items_purged_floors"])]
     other += [(f, "buy", base(n)) for n, f in zip(r["items_purchased"], r["item_purchase_floors"])
               if base(n) in known_cards]
-    # Events can add, remove or transform cards (the new card of a transform is not logged).
     for e in r["event_choices"]:
         ef = int(e["floor"])
         other += [(ef, "purge", base(c)) for c in e.get("cards_removed", [])]
