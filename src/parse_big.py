@@ -11,6 +11,7 @@ Output: data/processed/card_choices_big.csv
 import argparse
 import csv
 import json
+from collections import Counter
 from pathlib import Path
 
 import parse_runs  # same folder: reuses the deck rebuild and the row format
@@ -67,6 +68,22 @@ def with_ascenders_bane(run):
     return run
 
 
+def enrich(rows, run):
+    """Add relics, campfire upgrades and a skill proxy, as of each screen's floor."""
+    relics = [(int(x["floor"]), x["key"]) for x in run.get("relics_obtained", []) if "key" in x]
+    smiths = [(int(x["floor"]), parse_runs.base(x["data"]))
+              for x in run.get("campfire_choices", []) if x.get("key") == "SMITH" and x.get("data")]
+    experience = run.get("player_experience") or 0
+    cache = {}
+    for r in rows:
+        f = r["floor"]
+        if f not in cache:
+            cache[f] = (json.dumps(sorted(k for fl, k in relics if fl < f)),
+                        json.dumps(dict(Counter(c for fl, c in smiths if fl < f)), sort_keys=True))
+        r["relics"], r["upgrades"] = cache[f]
+        r["player_experience"] = experience
+
+
 def wanted(run, args):
     if run.get("is_daily") or run.get("is_endless") or run.get("is_trial"):
         return False
@@ -104,6 +121,7 @@ def main():
                 continue
             try:
                 rows, mm = parse_runs.parse_run(_Record(str(kept), with_ascenders_bane(run)))
+                enrich(rows, run)
             except (KeyError, TypeError, ValueError):
                 bad += 1
                 continue
