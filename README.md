@@ -126,3 +126,9 @@ gain is not just a bigger deck. At A10 (seeds 5000 to 5999) it gains +3.44 (+2.7
 - A second round of simulator data where the model plays most picks (`--epsilon`).
 - Features for card type, cost and rarity; fix the model skipping too rarely.
 - Overlay: needs a game mod to read the deck, relics, HP and offered cards.
+
+
+
+## Disclaimer 
+
+- LLM model used to for parsing.py modules as well as for research of the available datasets like the one I'm using november.7z
